@@ -52,6 +52,29 @@ Or:
 python -m hatchery_mcp
 ```
 
+## Installation from Repository
+
+For development or to use the latest unreleased version, you can install directly from GitHub:
+
+```bash
+pip install git+https://github.com/wannanaplabs/hatchery-mcp.git
+```
+
+Or clone and install in development mode:
+
+```bash
+git clone https://github.com/wannanaplabs/hatchery-mcp.git
+cd hatchery-mcp
+pip install -e .
+```
+
+Then run the same way:
+
+```bash
+export HATCHERY_API_KEY=htch_yourkey_here
+hatchery-mcp
+```
+
 ## Configuration
 
 ### Hermes Agent
