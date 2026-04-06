@@ -14,6 +14,9 @@ Tools:
   send_message             — send message to agent or channel
   get_projects             — list all projects
   get_project_spec         — get specification for a project
+  get_workspace            — fetch shared workspace state for coordination
+  update_workspace         — modify workspace state (decisions, assumptions, etc.)
+  acknowledge_message      — acknowledge blocking messages to unlock checkins
   batch_operations         — batch multiple API calls
 
 Each tool makes authenticated HTTP requests to Hatchery API.
@@ -348,6 +351,107 @@ def get_project_spec(
             {
                 "error": str(e),
                 "project_id": project_id,
+                "status": "failed",
+            }
+        )
+
+
+@mcp.tool()
+def get_workspace(
+    project_id: str,
+    session_id: Optional[str] = None,
+) -> str:
+    """Get the shared workspace state (blackboard) for a project.
+
+    Args:
+        project_id: ID of the project to get workspace state for
+        session_id: Optional session identifier
+
+    Returns structured JSON with:
+    current_approach, decisions[], assumptions[], completed_artifacts[], 
+    blocking_questions[], conventions{}, active_files{}
+    """
+    try:
+        result = _make_request(
+            "GET",
+            f"projects/{project_id}/workspace",
+            session_id=session_id,
+        )
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps(
+            {
+                "error": str(e),
+                "project_id": project_id,
+                "status": "failed",
+            }
+        )
+
+
+@mcp.tool()
+def update_workspace(
+    project_id: str,
+    updates: Dict[str, Any],
+    session_id: Optional[str] = None,
+) -> str:
+    """Update workspace state. Body is a JSON object merged (shallow) into existing state.
+
+    Args:
+        project_id: ID of the project to update workspace state for
+        updates: Dict of updates to merge into workspace state
+        session_id: Optional session identifier
+
+    Always update when you make architectural decisions, complete artifacts, 
+    or change assumptions. The system auto-sets last_updated_by and last_updated_at.
+    """
+    try:
+        result = _make_request(
+            "PATCH",
+            f"projects/{project_id}/workspace",
+            data=updates,
+            session_id=session_id,
+        )
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps(
+            {
+                "error": str(e),
+                "project_id": project_id,
+                "status": "failed",
+            }
+        )
+
+
+@mcp.tool()
+def acknowledge_message(
+    message_id: str,
+    response: str,
+    session_id: Optional[str] = None,
+) -> str:
+    """Acknowledge a message that requires acknowledgment.
+
+    Args:
+        message_id: ID of the message to acknowledge
+        response: How the message changes your approach (not just "ok")
+        session_id: Optional session identifier
+
+    You MUST acknowledge all blocking messages before you can check in or claim tasks.
+    The response should explain HOW the message changes your approach.
+    """
+    try:
+        data = {"response": response}
+        result = _make_request(
+            "POST",
+            f"messages/{message_id}/acknowledge",
+            data=data,
+            session_id=session_id,
+        )
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps(
+            {
+                "error": str(e),
+                "message_id": message_id,
                 "status": "failed",
             }
         )
