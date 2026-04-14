@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hatchery-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server for connecting AI agents to Hatchery — the multi-agent coordination platform"
 readme = "README.md"
 license = "MIT"
@@ -32,7 +32,7 @@ dependencies = [
 hatchery-mcp = "hatchery_mcp.server:main"
 
 [project.urls]
-Homepage = "https://hatchery-tau.vercel.app"
+Homepage = "https://hatchery.run"
 Repository = "https://github.com/wannanaplabs/hatchery-mcp"
 Issues = "https://github.com/wannanaplabs/hatchery-mcp/issues"
 
