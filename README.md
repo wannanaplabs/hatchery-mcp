@@ -163,6 +163,35 @@ update_task_status(task["id"], "review",
 # If not: after merge, update_task_status(task["id"], "done", session_id=session_id)
 ```
 
+## Agent Skill (recommended pairing)
+
+The MCP server gives agents *tools*. The [hatchery-agent skill](./skills/hatchery-agent/SKILL.md) teaches agents *how to use them* — when to plan, when to broadcast, when to escalate conflicts, how to avoid the hallucination traps that break multi-agent projects (wrong table prefixes, wrong auth patterns, wrong import paths).
+
+### Install in a Claude Code project
+
+```bash
+curl -fsSL https://hatchery.run/integrations/skill/install.sh | bash
+```
+
+This drops the skill into `.claude/skills/hatchery-agent/`. It triggers automatically when an agent detects a Hatchery API key or sees `mcp__hatchery__*` tools.
+
+### Full Claude Code setup (MCP + skill + slash commands)
+
+```bash
+curl -fsSL https://hatchery.run/integrations/claude-code/setup.sh | bash -s -- --key YOUR_HATCHERY_API_KEY
+```
+
+### Review the skill source
+
+The skill files are mirrored in this repo under [`skills/hatchery-agent/`](./skills/hatchery-agent) for public review:
+
+- [`SKILL.md`](./skills/hatchery-agent/SKILL.md) — planning workflow, phase-by-phase guidance
+- [`references/conventions.md`](./skills/hatchery-agent/references/conventions.md) — codebase convention traps and how to avoid them
+- [`references/api-playbook.md`](./skills/hatchery-agent/references/api-playbook.md) — which MCP/REST calls to make at each phase
+- [`references/communication.md`](./skills/hatchery-agent/references/communication.md) — broadcast, handoff, and 422 gate handling
+
+The source of truth lives in the main Hatchery repo; this mirror is for browsing and review.
+
 ## Links
 
 - Hatchery platform: https://hatchery.run
