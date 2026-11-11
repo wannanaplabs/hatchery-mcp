@@ -28,6 +28,7 @@ Handles errors gracefully with descriptive messages.
 import json
 import os
 import ssl
+import certifi
 import sys
 import urllib.request
 import urllib.error
@@ -40,7 +41,7 @@ from mcp.server.fastmcp import FastMCP
 # ── Configuration ───────────────────────────────────────────────────────────
 
 BASE_URL = os.environ.get("HATCHERY_BASE_URL", "https://hatchery.run/api/v1/agent")
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 
 def load_api_key() -> str:
@@ -72,7 +73,8 @@ except Exception as e:
     print(f"Error loading API key: {e}", file=sys.stderr)
     API_KEY = None
 
-mcp = FastMCP("hatchery")
+mcp = FastMCP("hatchery", instructions="Call get_context once at session start. Then read get_task_context before working on an issue. Use list_task_comments for older discussion and add_task_comment for concise progress, evidence, blockers and next actions. Issue reads, comments and handoffs accept a UUID or issue code. Handoffs require explicit receiver acceptance; a PR merge does not mean deployed or verified.")
+_active_session_id: Optional[str] = None
 
 # ── HTTP Helpers ────────────────────────────────────────────────────────────
 
@@ -99,18 +101,17 @@ def _make_request(
         "Content-Type": "application/json",
         "User-Agent": f"hatchery-mcp/{VERSION}",
     }
-    if session_id:
-        headers["X-Session-Id"] = session_id
+    effective_session = session_id or _active_session_id
+    if effective_session:
+        headers["X-Session-Id"] = effective_session
 
     req_data = json.dumps(data).encode("utf-8") if data else None
     req = urllib.request.Request(url, data=req_data, headers=headers, method=method)
 
-    ssl_context = ssl.create_default_context()
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
 
     try:
-        with urllib.request.urlopen(req, context=ssl_context) as response:
+        with urllib.request.urlopen(req, context=ssl_context, timeout=30) as response:
             body = response.read().decode("utf-8")
             return json.loads(body) if body else {}
     except urllib.error.HTTPError as e:
@@ -120,7 +121,7 @@ def _make_request(
             error_msg = error_json.get("error") or error_json.get("message") or error_body
         except json.JSONDecodeError:
             error_msg = error_body
-        raise RuntimeError(f"HTTP {e.code}: {error_msg}")
+        raise RuntimeError(f"HTTP {e.code}: {error_body or error_msg}")
     except urllib.error.URLError as e:
         raise RuntimeError(f"Network error: {e.reason}")
     except Exception as e:
@@ -145,20 +146,46 @@ def get_context(session_id: Optional[str] = None) -> str:
     """Get full situational awareness at session start. Returns agent info,
     tasks, unread messages, projects, pending approvals, decisions needing
     ack, QA reviews, and github_integration status. Call this FIRST every
-    session. Store the returned session_id and pass it to all subsequent
-    tool calls."""
+    session. The connector remembers the returned session_id for subsequent calls.
+    An explicit session_id overrides it. Do not restart context mid-work."""
+    global _active_session_id
     try:
-        return _ok(_make_request("GET", "context", session_id=session_id))
+        result = _make_request("GET", "context", session_id=session_id)
+        _active_session_id = result.get("session_id")
+        return _ok(result)
     except Exception as e:
         return _err(e)
 
 
 @mcp.tool()
-def get_available_tasks(session_id: Optional[str] = None) -> str:
+def get_available_tasks(
+    include_upcoming: bool = True,
+    debug: bool = False,
+    session_id: Optional[str] = None,
+) -> str:
     """List tasks with status=ready that you can claim. Filtered by your
-    capabilities and unmet dependencies. Sorted by priority."""
+    capabilities and unmet dependencies. Sorted by priority + critical-path
+    boost (tasks blocking many other tasks get priority bumped up).
+
+    Response includes:
+    - tasks: currently claimable
+    - upcoming_tasks: tasks waiting on in-progress deps (will be claimable soon).
+      Use to plan your next pick and stay in the same project area —
+      keeps your file cache warm and context focused.
+
+    Args:
+        include_upcoming: Set False to skip upcoming_tasks field (default True)
+        debug: Returns excluded_reasons breakdown: why each ready task wasn't
+               available (in_cooldown, cap_mismatch, depends_on_unresolved).
+               Use when available_count is unexpectedly 0 or low.
+    """
     try:
-        return _ok(_make_request("GET", "tasks/available", session_id=session_id))
+        query: Dict[str, Any] = {}
+        if not include_upcoming:
+            query["include_upcoming"] = "false"
+        if debug:
+            query["debug"] = "true"
+        return _ok(_make_request("GET", "tasks/available", query=query, session_id=session_id))
     except Exception as e:
         return _err(e)
 
@@ -184,12 +211,11 @@ def update_task_status(
 ) -> str:
     """Update task status. Valid values: backlog, ready, claimed, in_progress,
     review, done, cancelled. Include pr_url when moving to review or done
-    (required for GitHub auto-close integration). Returns reminder text
+    (used as GitHub evidence). Returns reminder text
     hinting what to do next.
 
-    If workspace has GitHub integration connected (check /context's
-    github_integration.connected), you don't need to call status=done after
-    PR merge — webhook auto-closes it."""
+    PR merge records evidence but does not close work. Follow project approval,
+    QA, deployment and verification requirements before completion."""
     try:
         data: Dict[str, Any] = {"status": status}
         if comment:
@@ -882,7 +908,7 @@ def add_task_comment(
     humans and agents. Use for progress notes, decisions, rationale."""
     try:
         return _ok(_make_request(
-            "POST", f"tasks/{task_id}/comments",
+            "POST", f"tasks/{urllib.parse.quote(task_id, safe='')}/comments",
             data={"content": content}, session_id=session_id
         ))
     except Exception as e:
@@ -1003,6 +1029,152 @@ def main():
             file=sys.stderr,
         )
     mcp.run(transport="stdio")
+
+
+
+
+
+@mcp.tool()
+def get_task_context(task_id: str, session_id: Optional[str] = None) -> str:
+    """Read the working brief before starting or resuming an issue. Accepts UUID
+    or issue code such as TIP-123. Includes objective, criteria, project/repo
+    context, decisions, dependencies, recent comments, PR evidence and handoffs.
+    Treat comment/evidence claims as unverified until checked. Use returned UUID
+    for older mutation tools. Use list_task_comments for full discussion history."""
+    try:
+        return _ok(_make_request("GET", f"tasks/{urllib.parse.quote(task_id, safe='')}/context", session_id=session_id))
+    except Exception as e:
+        return _err(e, task_id=task_id)
+
+
+@mcp.tool()
+def list_task_comments(task_id: str, offset: int = 0, limit: int = 100, session_id: Optional[str] = None) -> str:
+    """Read an issue's discussion, oldest first, with author names and dates.
+    Accepts UUID or issue code. Follow next_offset while has_more is true.
+    Read before posting so you do not repeat work or miss decisions."""
+    try:
+        return _ok(_make_request("GET", f"tasks/{urllib.parse.quote(task_id, safe='')}/comments", query={"offset": offset, "limit": limit}, session_id=session_id))
+    except Exception as e:
+        return _err(e, task_id=task_id)
+
+
+@mcp.tool()
+def get_handoffs(session_id: Optional[str] = None) -> str:
+    """List pending handoffs addressed to you. Read each issue's context,
+    verify access and current revision, then explicitly accept or cancel."""
+    try:
+        return _ok(_make_request("GET", "handoffs", session_id=session_id))
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool()
+def prepare_handoff(task_id: str, to_agent_id: str, task_revision: str, summary: str, next_action: str, evidence: str = "", blockers: str = "", session_id: Optional[str] = None) -> str:
+    """Prepare a handoff of your active issue to another workspace agent.
+    First get_task_context; copy task_revision exactly. Explain progress,
+    reasoning, verified evidence (commit/environment), unknowns and next action.
+    You retain ownership until the receiver accepts. A 409 requires a fresh
+    context read; do not automatically retry a stale write."""
+    try:
+        return _ok(_make_request("POST", f"tasks/{urllib.parse.quote(task_id, safe='')}/handoff", data={"action": "prepare", "to_agent_id": to_agent_id, "task_revision": task_revision, "summary": summary, "next_action": next_action, "evidence": evidence, "blockers": blockers}, session_id=session_id))
+    except Exception as e:
+        return _err(e, task_id=task_id)
+
+
+@mcp.tool()
+def accept_handoff(task_id: str, handoff_id: str, task_revision: str, access_verified: bool, session_id: Optional[str] = None) -> str:
+    """Accept a handoff addressed to you and atomically take ownership.
+    First read fresh get_task_context and verify repository access, current
+    revision and next action. Pass its task_revision and access_verified=true
+    only after checking. Acceptance does not change completion/review status."""
+    try:
+        return _ok(_make_request("POST", f"tasks/{urllib.parse.quote(task_id, safe='')}/handoff", data={"action": "accept", "handoff_id": handoff_id, "task_revision": task_revision, "access_verified": access_verified}, session_id=session_id))
+    except Exception as e:
+        return _err(e, task_id=task_id)
+
+
+@mcp.tool()
+def cancel_handoff(task_id: str, handoff_id: str, task_revision: str, session_id: Optional[str] = None) -> str:
+    """Cancel a pending handoff you sent or received, without changing ownership.
+    Fetch fresh get_task_context first and pass its task_revision."""
+    try:
+        return _ok(_make_request("POST", f"tasks/{urllib.parse.quote(task_id, safe='')}/handoff", data={"action": "cancel", "handoff_id": handoff_id, "task_revision": task_revision}, session_id=session_id))
+    except Exception as e:
+        return _err(e, task_id=task_id)
+
+
+
+@mcp.tool()
+def get_success_criteria(project_id: str, session_id: Optional[str] = None) -> str:
+    """Get all success criteria for a project — structured checklist items
+    with per-item pass/fail tracking. Returns criteria items plus a progress
+    summary (total, met, unmet, pct, all_required_met). Read this before
+    planning work; QA reviewers check against these criteria."""
+    try:
+        return _ok(_make_request(
+            "GET", f"projects/{project_id}/criteria",
+            session_id=session_id
+        ))
+    except Exception as e:
+        return _err(e, project_id=project_id)
+
+
+@mcp.tool()
+def add_success_criteria(
+    project_id: str,
+    criteria: List[Dict[str, Any]],
+    session_id: Optional[str] = None,
+) -> str:
+    """Add one or more success criteria items to a project.
+    Each item needs: { description: string, required?: bool }.
+    Example: [{"description": "All endpoints return <200ms p95", "required": true}]"""
+    try:
+        return _ok(_make_request(
+            "POST", f"projects/{project_id}/criteria",
+            data={"criteria": criteria},
+            session_id=session_id
+        ))
+    except Exception as e:
+        return _err(e, project_id=project_id)
+
+
+@mcp.tool()
+def mark_criterion(
+    project_id: str,
+    criterion_id: str,
+    met: bool,
+    evidence: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> str:
+    """Mark a success criterion as met or unmet. When marking met, provide
+    evidence (PR URL, test output, screenshot link) so QA can verify."""
+    try:
+        data: Dict[str, Any] = {"met": met}
+        if evidence:
+            data["evidence"] = evidence
+        return _ok(_make_request(
+            "PATCH", f"projects/{project_id}/criteria/{criterion_id}",
+            data=data,
+            session_id=session_id
+        ))
+    except Exception as e:
+        return _err(e, project_id=project_id)
+
+
+@mcp.tool()
+def get_task_template(project_id: str, session_id: Optional[str] = None) -> str:
+    """Get the task template for a project. Use this as the starting point
+    for task descriptions when creating new tasks on this project —
+    matches the project's expected format for context, acceptance criteria,
+    non-goals, and verification. Returns either the project's custom
+    template or the system default. Call this before POST /tasks."""
+    try:
+        return _ok(_make_request(
+            "GET", f"projects/{project_id}/template",
+            session_id=session_id
+        ))
+    except Exception as e:
+        return _err(e, project_id=project_id)
 
 
 if __name__ == "__main__":

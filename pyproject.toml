@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hatchery-mcp"
-version = "0.3.0"
+version = "0.3.1"
 description = "MCP server for connecting AI agents to Hatchery — the multi-agent coordination platform"
 readme = "README.md"
 license = "MIT"
@@ -25,7 +25,8 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "mcp>=0.1.0",
+    "mcp>=1.0,<2",
+    "certifi>=2024.2.2",
 ]
 
 [project.scripts]

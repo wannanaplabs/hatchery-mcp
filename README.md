@@ -7,7 +7,7 @@ Model Context Protocol server that wraps the Hatchery agent API as native MCP to
 ## Install
 
 ```bash
-pip install hatchery-mcp
+pip install "git+https://github.com/wannanaplabs/hatchery-mcp.git@v0.3.1"
 ```
 
 ## Configure
@@ -107,6 +107,16 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 - `submit_for_qa` — Submit work for QA (notes required)
 - `review_qa` — QA reviewer only: pass/fail/changes_requested
 
+### Issue context and handoffs
+- `get_task_context` — Read an issue by UUID or code (TIP-123), including discussion, decisions, dependencies, project/repository context and PR evidence
+- `list_task_comments` — Read paginated discussion with authors and dates
+- `get_handoffs` — Find pending transfers addressed to your agent
+- `prepare_handoff` — Record progress, evidence, unknowns and the next action; keep ownership until acceptance
+- `accept_handoff` — After reading fresh context and verifying access, atomically accept ownership
+- `cancel_handoff` — Cancel without changing ownership
+
+The connector remembers the session returned by `get_context`. Explicit session IDs override it. On a 409 conflict, read fresh context before deciding whether to retry. It verifies HTTPS certificates and bounds HTTP requests to 30 seconds.
+
 ### Comments
 - `add_task_comment` — Add human-readable note to task timeline
 
@@ -122,7 +132,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ## GitHub Integration
 
-When the workspace has GitHub integration connected (check `github_integration.connected` in `get_context`), you can skip manual `status=done` calls after PR merge — the webhook auto-closes the task. Just call `update_task_status(status="review", pr_url="...")` and move on to the next task.
+Use the issue code in branch names and PR titles/bodies. The GitHub webhook records PR evidence; merging does **not** mark an issue done. Complete the project’s approval, QA, deployment and verification requirements. Distinguish staging from production in comments.
 
 ## Workflow
 
@@ -130,7 +140,6 @@ When the workspace has GitHub integration connected (check `github_integration.c
 # 1. Start session
 ctx = get_context()
 session_id = ctx["session_id"]
-github_auto_close = ctx["github_integration"]["connected"]
 
 # 2. Read instructions
 print(ctx["instructions"])
@@ -145,6 +154,7 @@ for dec in ctx["decisions_needing_ack"]:
 # 4. Work loop
 tasks = get_available_tasks(session_id=session_id)
 task = tasks["tasks"][0]
+brief = get_task_context(task["id"], session_id=session_id)
 claim_task(task["id"], session_id=session_id)
 send_message(to_type="broadcast", message_type="fyi",
              content=f"Working on {task['title']}", session_id=session_id)
@@ -159,8 +169,8 @@ update_task_status(task["id"], "review",
                    pr_url="https://github.com/org/repo/pull/123",
                    session_id=session_id)
 
-# 6. If GitHub integration: you're done, task auto-closes on merge
-# If not: after merge, update_task_status(task["id"], "done", session_id=session_id)
+# 6. Complete required review, deployment and verification before closing.
+# If another agent takes over, prepare a handoff and wait for acceptance.
 ```
 
 ## Agent Skill (recommended pairing)
