@@ -41,7 +41,7 @@ from mcp.server.fastmcp import FastMCP
 # ── Configuration ───────────────────────────────────────────────────────────
 
 BASE_URL = os.environ.get("HATCHERY_BASE_URL", "https://hatchery.run/api/v1/agent")
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 
 
 def load_api_key() -> str:
@@ -73,7 +73,7 @@ except Exception as e:
     print(f"Error loading API key: {e}", file=sys.stderr)
     API_KEY = None
 
-mcp = FastMCP("hatchery", instructions="Call get_context once at session start. Then read get_task_context before working on an issue. Use list_task_comments for older discussion and add_task_comment for concise progress, evidence, blockers and next actions. Issue reads, comments and handoffs accept a UUID or issue code. Handoffs require explicit receiver acceptance; a PR merge does not mean deployed or verified.")
+mcp = FastMCP("hatchery", instructions="Call get_context once at session start. Inspect issue rules before acting; read and acknowledge current task context if required. Use get_development_playbook for stage-specific guidance. Never bypass a blocked action through a different endpoint. Then read get_task_context before working on an issue. Use list_task_comments for older discussion and add_task_comment for concise progress, evidence, blockers and next actions. Issue reads, comments and handoffs accept a UUID or issue code. Handoffs require explicit receiver acceptance; a PR merge does not mean deployed or verified.")
 _active_session_id: Optional[str] = None
 
 # ── HTTP Helpers ────────────────────────────────────────────────────────────
@@ -1176,6 +1176,40 @@ def get_task_template(project_id: str, session_id: Optional[str] = None) -> str:
     except Exception as e:
         return _err(e, project_id=project_id)
 
+
+@mcp.tool()
+def get_task_rules(task_id: str, session_id: Optional[str] = None) -> str:
+    """Read enforced workflow rules and concrete completion/start blockers.
+    Accepts an issue code or UUID. Satisfy requirements instead of trying a
+    different write endpoint. Only a workspace administrator can record an exception."""
+    try:
+        return _ok(_make_request("GET", f"tasks/{urllib.parse.quote(task_id, safe='')}/rules", session_id=session_id))
+    except Exception as e:
+        return _err(e, task_id=task_id)
+
+
+@mcp.tool()
+def acknowledge_task_context(task_id: str, context_version: str, reviewed: bool, session_id: Optional[str] = None) -> str:
+    """Acknowledge the current issue brief after reading its scope, decisions,
+    guidance and dependencies. Copy rules.context_version from get_task_context.
+    Set reviewed=true only after reading. A stale version is rejected; reread
+    context rather than retrying blindly. This does not prove understanding."""
+    try:
+        return _ok(_make_request("POST", f"tasks/{urllib.parse.quote(task_id, safe='')}/ack-context", data={"context_version": context_version, "reviewed": reviewed}, session_id=session_id))
+    except Exception as e:
+        return _err(e, task_id=task_id)
+
+
+@mcp.tool()
+def get_development_playbook(session_id: Optional[str] = None) -> str:
+    """Read Hatchery's default development workflow: scope, planning, diagnosis,
+    implementation, review and handoff. Use the relevant stage; instructions
+    are guidance, while task rules are enforced. Project guidance is included
+    in get_task_context. These playbooks are versioned with the application."""
+    try:
+        return _ok(_make_request("GET", "playbooks", session_id=session_id))
+    except Exception as e:
+        return _err(e)
 
 if __name__ == "__main__":
     main()

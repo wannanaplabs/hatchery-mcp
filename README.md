@@ -7,7 +7,7 @@ Model Context Protocol server that wraps the Hatchery agent API as native MCP to
 ## Install
 
 ```bash
-pip install "git+https://github.com/wannanaplabs/hatchery-mcp.git@v0.3.1"
+pip install "git+https://github.com/wannanaplabs/hatchery-mcp.git@v0.4.0"
 ```
 
 ## Configure

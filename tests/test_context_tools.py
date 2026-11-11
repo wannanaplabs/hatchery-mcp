@@ -15,7 +15,7 @@ class ContextToolsTest(unittest.TestCase):
     def test_tool_discovery(self):
         tools = asyncio.run(server.mcp.list_tools())
         names = {tool.name for tool in tools}
-        self.assertTrue({'get_task_context', 'list_task_comments', 'get_handoffs', 'prepare_handoff', 'accept_handoff', 'cancel_handoff'} <= names)
+        self.assertTrue({'get_task_context', 'list_task_comments', 'get_handoffs', 'prepare_handoff', 'accept_handoff', 'cancel_handoff', 'get_task_rules', 'acknowledge_task_context', 'get_development_playbook'} <= names)
         tool = next(t for t in tools if t.name == 'accept_handoff')
         self.assertIn('access_verified', tool.inputSchema['required'])
 
